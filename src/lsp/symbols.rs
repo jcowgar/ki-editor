@@ -17,23 +17,32 @@ impl Symbols {
         parent_name: Option<String>,
         path: &CanonicalizedPath,
     ) -> Result<Vec<Symbol>, anyhow::Error> {
-        let mut symbols = Vec::new();
-        let mut symbol = Symbol::try_from_document_symbol(document_symbol.clone(), path.clone())?;
-        symbol.container_name = parent_name.clone(); // Set the container_name
-        symbols.push(symbol);
-
-        if let Some(children) = document_symbol.clone().children {
-            for child in children {
-                let mut child_symbols = Self::collect_document_symbols(
-                    &child,
-                    Some(document_symbol.name.clone()),
-                    path,
-                )?;
-                symbols.append(&mut child_symbols);
-            }
-        };
-
-        Ok(symbols)
+        Ok(std::iter::once(Symbol::try_from_document_symbol(
+            document_symbol.clone(),
+            path.clone(),
+            &parent_name,
+        )?)
+        .chain(
+            document_symbol
+                .children
+                .iter()
+                .flatten()
+                .map(|child| {
+                    let parent_name = format!(
+                        "{}{}",
+                        parent_name
+                            .as_ref()
+                            .map(|name| format!("{name} ▶ ",))
+                            .unwrap_or_default(),
+                        document_symbol.name.clone()
+                    );
+                    Self::collect_document_symbols(child, Some(parent_name), path)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten(),
+        )
+        .collect())
     }
 
     pub(crate) fn try_from_document_symbol_response(
@@ -48,16 +57,15 @@ impl Symbols {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Self { symbols })
             }
-            DocumentSymbolResponse::Nested(symbols) => {
-                let mut collected_symbols = Vec::new();
-                for symbol in symbols {
-                    let mut child_symbols = Self::collect_document_symbols(&symbol, None, &path)?;
-                    collected_symbols.append(&mut child_symbols);
-                }
-                Ok(Self {
-                    symbols: collected_symbols,
-                })
-            }
+            DocumentSymbolResponse::Nested(symbols) => Ok(Self {
+                symbols: symbols
+                    .iter()
+                    .map(|symbol| Self::collect_document_symbols(symbol, None, &path))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            }),
         }
     }
 }
@@ -81,6 +89,7 @@ impl Symbol {
     fn try_from_document_symbol(
         value: lsp_types::DocumentSymbol,
         path: CanonicalizedPath,
+        container_name: &Option<String>,
     ) -> anyhow::Result<Self> {
         let name = value.name;
         let start_position = value.range.start.into();
@@ -92,7 +101,7 @@ impl Symbol {
                 path,
                 range: start_position..end_position,
             },
-            container_name: None,
+            container_name: container_name.as_ref().cloned(),
         })
     }
 }
